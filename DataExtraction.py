@@ -11,7 +11,7 @@ import matplotlib
 import copy as cp
 from functools import reduce 
 from matplotlib import pyplot as plt
-import matplotlib
+
 
 production_data_path = "Data/ProductionData/"
 inertia_data_path = "Data/InertiaData/"
@@ -23,6 +23,17 @@ years = ('2022', '2021', '2020', '2019', '2018', '2017', '2016')
 
 months = ('01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12')
 
+keys = ['Biomass[MW]', 'FossilGas[MW]', 'FossilHardcoal[MW]', 'FossilOil[MW]',
+       'FossilPeat[MW]', 'HydroPumpedStorage[MW]',
+       'HydroRun-of-riverandpoundage[MW]', 'HydroWaterReservoir[MW]',
+       'Nuclear[MW]', 'Other[MW]', 'Otherrenewable[MW]', 'Solar[MW]',
+       'Waste[MW]', 'WindOffshore[MW]', 'WindOnshore[MW]']
+
+wind_keys = ('WindOffshore[MW]', 'WindOnshore[MW]')
+conventional_keys = ('Biomass[MW]', 'FossilGas[MW]', 'FossilHardcoal[MW]', 'FossilOil[MW]',
+       'FossilPeat[MW]', 'HydroPumpedStorage[MW]',
+       'HydroRun-of-riverandpoundage[MW]', 'HydroWaterReservoir[MW]',
+       'Nuclear[MW]', 'Other[MW]','Waste[MW]',)
 
 def get_datasets(countries=countries, years=years,path=production_data_path, suffix=suffix):
     
@@ -45,7 +56,7 @@ def get_datasets(countries=countries, years=years,path=production_data_path, suf
             #df.fillna(value=0, inplace=True)
             df.dropna(axis=0, how='all', inplace=True, subset=col_subset) # Drop dates with no data
             df.dropna(axis=1, how='all', inplace=True) # drop columns with no values
-            df['MTU'] = pd.to_datetime(df['MTU'].str.split('-').str[0]) # Convert timestamp str to datetime
+            df['MTU'] = pd.to_datetime(df['MTU'].str.split('-').str[0],dayfirst=True) # Convert timestamp str to datetime
             df.rename(columns={'MTU':'Time'}, inplace=True)
         
         # df['MTU'].apply(str.split, args=('-'))
@@ -63,7 +74,7 @@ def get_tot_by_year(year, data):
     
     dfs = [country_data[key] for key in country_data.keys()]
     
-    tot = reduce(lambda a, b: a.set_index('MTU').add(b.set_index('MTU'), fill_value=0).reset_index(), dfs)
+    tot = reduce(lambda a, b: a.set_index('Time').add(b.set_index('Time'), fill_value=0).reset_index(), dfs)
     return tot
 
 #df = get_datasets()  
@@ -84,7 +95,7 @@ def get_inertia_data(year, path=inertia_data_path):
                                'Kinetic energy of the Nordic power system - real time data':"Inertia[GW]"}, inplace=True)
      df = pd.concat(df,axis=0)
      df.reset_index()
-     df["Time"] = pd.to_datetime(df["Time"])
+     df["Time"] = pd.to_datetime(df["Time"], dayfirst=False)
      return df
 
 
@@ -92,17 +103,25 @@ def get_full_year(year, inertia_frame):
     prod = pd.read_csv(production_data_path + "Nordic{}".format(year) + suffix)
     prod.drop(labels=["Unnamed: 0"],inplace=True, axis=1)
     prod.rename(columns={'MTU':'Time'},inplace=True)
-    prod['Time'] = pd.to_datetime(prod['Time'])
+    prod['Time'] = pd.to_datetime(prod['Time'],dayfirst=False)
     prod_inert = prod.merge(inertia_frame, how='outer', on='Time')
-    prod_inert.dropna(how='all',thresh=3,inplace=True)
+    #Drop rows with all except three nan. Corresponds to removing rows where no production data is available
+    prod_inert.dropna(how='all',thresh=3,inplace=True)  
     return prod_inert
 
-def scatter_year(df, year, onshore=True):
-    if onshore:
-        windlabel = "WindOnshore[MW]"
-    else:
-        windlabel = "WindOffshore[MW]"
-    wind = df[windlabel].to_numpy()
+def interpolate_missing(data):
+    # Assumes data is a pandas DataFrame
+    pass
+    
+def find_na(df, key):
+    
+    return df[key].isna().sum()
+
+
+
+def scatter_year(df, year, label):
+    
+    wind = df[label].to_numpy()
     inertia = df["Inertia[GW]"].to_numpy()
     
     normal_w = reject_outliers(wind)
@@ -120,11 +139,9 @@ def scatter_year(df, year, onshore=True):
     plt.figure()
     plt.scatter(inertia, wind)
     plt.xlabel("Normalised Inertia")
-    plt.ylabel("Normalised wind production")
-    if onshore:
-        wind_title = "Onshore Wind production vs Inertia {}".format(year)
-    else:
-        wind_title = "Offshore Wind production vs Inertia{}".format(year)
+    plt.ylabel("Normalised {} production".format(label))
+
+    wind_title = "{} vs Inertia{}".format(label, year)
     plt.title(wind_title)
     plt.show()
     
@@ -132,6 +149,26 @@ def reject_outliers(data, m=3):
     normal_inds = [i for i,val in enumerate(abs(data - np.nanmean(data)) < m * np.nanstd(data)) if val]
     
     return normal_inds
+
+def get_total_production(df, keys=keys):
+    df["Total_production"] = 0
+    for key in keys:
+        try:
+            df["Total_production"] = df["Total_production"].add(df[key], fill_value=0)
+        except KeyError:
+            print(key + " Not in DataFrame")
+    df["Share_Wind"] = 0
+    for key in wind_keys:
+        df["Share_Wind"] = df["Share_Wind"].add(df[key], fill_value=0)
+    df["Share_Wind"] = df["Share_Wind"].div(df["Total_production"], fill_value=0)
+    
+    df["Share_Conv"] = 0 # Share conventional generation
+    for key in conventional_keys:
+        try:
+            df["Share_Conv"] = df["Share_Conv"].add(df[key], fill_value=0)
+        except KeyError:
+            print(key + " Not in DataFrame")
+    df["Share_Conv"] = df["Share_Conv"].div(df["Total_production"], fill_value=0)
 #tot = get_tot_by_year(2022, df)
 
         #print(year.keys())
