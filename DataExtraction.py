@@ -35,6 +35,9 @@ conventional_keys = ('Biomass[MW]', 'FossilGas[MW]', 'FossilHardcoal[MW]', 'Foss
        'HydroRun-of-riverandpoundage[MW]', 'HydroWaterReservoir[MW]',
        'Nuclear[MW]', 'Other[MW]','Waste[MW]',)
 
+training_labels = ['Inertia[GW]',
+       'Total_production', 'Share_Wind', 'Share_Conv']
+
 def get_datasets(countries=countries, years=years,path=production_data_path, suffix=suffix):
     
     # reading csv files into dataframes
@@ -174,9 +177,34 @@ def get_total_production(df, keys=keys):
         #print(year.keys())
 #dataframes["Sweden"]["2022"].plot()
 
-
+def get_training_data(df, labels=training_labels):
+    try:
+        df.set_index("Time", inplace=True)
+    except KeyError:
+        print("Index already set to time")
+    
+    training_df = df.filter(labels, axis=1)
+    
+    training_df["month"] = training_df.index.month
+    training_df["hour"] = training_df.index.hour
+    for label in labels:
+        mean = training_df[label].mean()
+        std = training_df[label].std()
+        training_df[label] = (training_df[label] - mean)/std
+        training_df[label + "_mean"] = mean
+        training_df[label + "_std"] = std
+    return training_df
 # def add_countries(country1, country2)
 
 #     df_sum = pd.DataFrame()
 
+def load_dataset(year):
+    df = pd.read_csv("Data/ProdInertia{}.csv".format(year))
+    df["Time"] = pd.to_datetime(df["Time"], yearfirst=True)
+    #df.drop("Unnamed: 0", axis=1, inplace=True)
+    return df
+
+years = np.arange(2016, 2023)
+
+data = [load_dataset for year in years]
 
