@@ -187,12 +187,12 @@ def get_training_data(df, labels=training_labels):
     
     training_df["month"] = training_df.index.month
     training_df["hour"] = training_df.index.hour
-    for label in labels:
-        mean = training_df[label].mean()
-        std = training_df[label].std()
-        training_df[label] = (training_df[label] - mean)/std
-        training_df[label + "_mean"] = mean
-        training_df[label + "_std"] = std
+    # for label in labels:
+    #     mean = training_df[label].mean()
+    #     std = training_df[label].std()
+    #     training_df[label] = (training_df[label] - mean)/std
+    #     training_df[label + "_mean"] = mean
+    #     training_df[label + "_std"] = std
     return training_df
 # def add_countries(country1, country2)
 
