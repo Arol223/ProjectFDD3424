@@ -16,7 +16,7 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import MinMaxScaler
 
 input_names = ("Inertia[GW]", "Total_production", "Share_Wind", "Share_Conv","month", "hour")
-output_names = ("Inertia[GW]")
+output_names = ("Inertia[GW]",)
 datafile_path = "Data/CleanedTrainingset16-22.csv"
 def to_supervised(df, n_in, n_out, input_names, output_names):
     cols = []
@@ -39,8 +39,9 @@ def to_supervised(df, n_in, n_out, input_names, output_names):
 
 class InertiaDataset(Dataset):
     
-    def __init__(self, inertia_data, sequence_length=24, output_length=5):
-        self.data = inertia_data
+    def __init__(self, input_data, target_data, sequence_length=24, output_length=5):
+        self.input_data = input_data
+        self.target_data = target_data
         self.sequence_length = sequence_length
         self.output_length = output_length
     
@@ -49,7 +50,8 @@ class InertiaDataset(Dataset):
         return self.data.shape[0] - self.sequence_length
     
     def __getitem__(self, index):
-        return self.data[index:index+self.sequence_length, :]
+        input_sequence = self.input_data[index:index+self.sequence_length, :]
+        #target_sequence = self.target_data[index:inde]
 
 class Stacked_LSTM(nn.Module):
     
@@ -61,6 +63,6 @@ class Stacked_LSTM(nn.Module):
         self.lstm1 = nn.LSTMCell(n_inputs, self.hidden1)
         self.lstm2 = nn.LSTMCell(self.hidden1, self.hidden2)
         self.dropout = nn.Dropout(0.25)
-        
-        
+    
+data = pd.read_csv("Data/CleanedTrainingset16-22.csv", index_col=0)
         
