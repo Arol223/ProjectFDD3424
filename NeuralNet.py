@@ -82,17 +82,18 @@ class Stacked_LSTM(nn.Module):
         self.linear = nn.linear(self.hidden2, n_inputs) # To be able to forecast without measured input need to predict all inputs
     
     def forward(self, input_seq, future_preds=0):
-        outputs, n_samples = [], input_seq.size(0)
-        h_t = torch.zeros(n_samples, self.hidden1, dtype=torch.float32)
-        c_t = torch.zeros(n_samples, self.hidden1, dtype=torch.float32)
-        h_t2 = torch.zeros(n_samples, self.hidden2, dtype=torch.float32)
-        c_t2 = torch.zeros(n_samples, self.hidden2, dtype=torch.float32)
+        outputs, n_batch = [], input_seq.size(0)
+        h_t = torch.zeros(n_batch, self.hidden1, dtype=torch.float32)
+        c_t = torch.zeros(n_batch, self.hidden1, dtype=torch.float32)
+        h_t2 = torch.zeros(n_batch, self.hidden2, dtype=torch.float32)
+        c_t2 = torch.zeros(n_batch, self.hidden2, dtype=torch.float32)
         
         # torch.nn.init.xavier_normal_(h_t)
         # torch.nn.init.xavier_normal_(c_t)
         # torch.nn.init.xavier_normal_(h_t2)
         # torch.nn.init.xavier_normal_(c_t2)
         for input_t in input_seq.split(1, dim=1):
+            input_t = input_t.squeeze(dim=1) # Because dataloader gives batch first have to do it like this
             h_t, c_t = self.lstm1(input_t, (h_t,c_t))
             h_t, c_t = self.dropout(h_t), self.dropout(c_t)
             h_t2, c_t2 = self.lstm2(h_t, (h_t2, c_t2))
@@ -107,6 +108,7 @@ class Stacked_LSTM(nn.Module):
             outputs.append(output)
         outputs = torch.cat(outputs, dim=1)
         return outputs
-        
+
+
 #data = pd.read_csv("Data/CleanedTrainingset16-22.csv", index_col=0)
         
