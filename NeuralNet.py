@@ -4,7 +4,8 @@ Created on Fri May 13 14:30:37 2022
 
 @author: arvidro
 """
-
+# Batch size (Normal way) would correspond to time steps (e.g. there are x time steps per epoch)
+# 
 import numpy as np
 import torch
 import torch.autograd as autograd
@@ -96,8 +97,14 @@ class InertiaDataset(Dataset):
             target_sequence[:, i] = tensor(self.target_data[idx, i*o_len:(i + 1) * o_len])
         return input_sequence, target_sequence
 
-class Stacked_LSTM(nn.Module):
+
+class MultilayerLSTM(nn.Module):
     
+    def __init__(self, n_features=6, n_hidden=128, n_layers=2, drpout_lvl=0.2):
+        super(MultilayerLSTM, self).__init__()
+        
+class Stacked_LSTM(nn.Module):
+    # Attempt with LSTMCell
     def __init__(self, n_inputs=6, hidden1=128, hidden2=128, dropout_lvl=0.1):
         
         super(Stacked_LSTM, self).__init__()
