@@ -16,7 +16,7 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 input_names = ("Inertia[GW]", "Total_production", "Share_Wind", "Share_Conv","month", "hour")
-output_names = ("Inertia[GW]",)
+output_names = ("Inertia[GW]","Total_production", "Share_Wind", "Share_Conv","month", "hour")
 datafile_path = "Data/CleanedTrainingset16-22.csv"
 def to_supervised(df, n_in, n_out, input_names, output_names):
     input_cols = []
@@ -45,7 +45,7 @@ def to_supervised(df, n_in, n_out, input_names, output_names):
 class InertiaDataset(Dataset):
     
     def __init__(self, input_data, target_data, sequence_length=24,
-                 in_features=6, output_length=1, target_features=1):
+                 in_features=6, output_length=1, target_features=6):
         self.input_data = input_data
         self.target_data = target_data
         self.sequence_length = sequence_length
@@ -77,7 +77,9 @@ class Stacked_LSTM(nn.Module):
         self.lstm1 = nn.LSTMCell(n_inputs, self.hidden1)
         self.lstm2 = nn.LSTMCell(self.hidden1, self.hidden2)
         self.dropout = nn.Dropout(dropout_lvl)
-        self.linear = nn.linear(self.hidden2, 1)
+        self.BN1 = nn.BatchNorm1d(hidden1)
+        self.BN2 = nn.BatchNorm1d(hidden2)
+        self.linear = nn.linear(self.hidden2, n_inputs) # To be able to forecast without measured input need to predict all inputs
     
     def forward(self, input_seq, future_preds=0):
         outputs, n_samples = [], input_seq.size(0)
@@ -86,16 +88,25 @@ class Stacked_LSTM(nn.Module):
         h_t2 = torch.zeros(n_samples, self.hidden2, dtype=torch.float32)
         c_t2 = torch.zeros(n_samples, self.hidden2, dtype=torch.float32)
         
-        torch.nn.init.xavier_normal_(h_t)
-        torch.nn.init.xavier_normal_(c_t)
-        torch.nn.init.xavier_normal_(h_t2)
-        torch.nn.init.xavixavier_normal_(c_t2)
+        # torch.nn.init.xavier_normal_(h_t)
+        # torch.nn.init.xavier_normal_(c_t)
+        # torch.nn.init.xavier_normal_(h_t2)
+        # torch.nn.init.xavier_normal_(c_t2)
         for input_t in input_seq.split(1, dim=1):
             h_t, c_t = self.lstm1(input_t, (h_t,c_t))
+            h_t, c_t = self.dropout(h_t), self.dropout(c_t)
+            h_t2, c_t2 = self.lstm2(h_t, (h_t2, c_t2))
+            h_t2, c_t2 = self.dropout(h_t2), self.dropout(c_t2)
+            output = self.linear(h_t2)
+            outputs.append(output)
+        
+        for i in range(future_preds):
+            h_t, c_t = self.lstm1(output, (h_t, c_t))
             h_t2, c_t2 = self.lstm2(h_t, (h_t2, c_t2))
             output = self.linear(h_t2)
             outputs.append(output)
-            
+        outputs = torch.cat(outputs, dim=1)
+        return outputs
         
 #data = pd.read_csv("Data/CleanedTrainingset16-22.csv", index_col=0)
         
