@@ -4,6 +4,8 @@ Created on Fri May 13 14:30:37 2022
 
 @author: arvidro
 """
+
+import numpy as np
 import torch
 import torch.autograd as autograd
 from torch import tensor
@@ -18,30 +20,53 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 input_names = ("Inertia[GW]", "Total_production", "Share_Wind", "Share_Conv","month", "hour")
 output_names = ("Inertia[GW]","Total_production", "Share_Wind", "Share_Conv","month", "hour")
 datafile_path = "Data/CleanedTrainingset16-22.csv"
+scale_columns = ["Inertia[GW]","Total_production", "Share_Wind", "Share_Conv",
+                 "month", "hour"]
 def to_supervised(df, n_in, n_out, input_names, output_names):
-    input_cols = []
-    target_cols = []
-    inputs_names = []
-    target_names = []
+    cols = []
+    names = []
     for name in input_names:
         for i in range(n_in, 0, -1):
-            input_cols.append(df[name].shift(i))
-            inputs_names.append(name + "(t-{})".format(i))
+            cols.append(df[name].shift(i))
+            names.append(name + "(t-{})".format(i))
     for name in output_names:
         for i in range(0, n_out):
-            target_cols.append(df[name].shift(-i))
+            cols.append(df[name].shift(-i))
             if i == 0:
-                target_names.append(name + "(t)")
+                names.append(name + "(t)")
             else:
-                target_names.append(name + "(t+{})".format(i))
-    input_df = pd.concat(input_cols, axis=1)
-    input_df.columns = inputs_names
-    input_df.dropna(inplace=True)
-    target_df = pd.concat(target_cols, axis=1)
-    target_df.columns = target_names
-    target_df.dropna(inplace=True)
-    return input_df, target_df
+                names.append(name + "(t+{})".format(i))
+    supervised = pd.concat(cols, axis=1)
+    supervised.columns = names
+    supervised.dropna(inplace=True)
+    return supervised
 
+def get_split_sets(split=(0.8,0.05,0.15), scaler=MinMaxScaler(feature_range=(0,1)),
+             data_path=datafile_path, scale_columns=scale_columns,
+             input_names=input_names, output_names=output_names, n_samples=24, n_out=1):
+    # Perform a train-val-test split, scale data and return datasets
+    dataset = pd.read_csv(datafile_path, index_col=0)
+    dataset[scale_columns] = scaler.fit_transform(dataset[scale_columns])
+    
+    supervised = to_supervised(dataset, n_samples, n_out, input_names, output_names)
+    l = len(supervised)
+    r_train = [0, round(split[0] * l)]
+    r_val = [r_train[1], r_train[1] + round(split[1] * l)]
+    r_test = [r_val[1], r_val[1] + round(split[2] * l)]
+    
+    
+    train_set = supervised.iloc[r_train[0]:r_train[1]]
+    val_set = supervised.iloc[r_val[0]:r_val[1]]
+    test_set = supervised.iloc[r_test[0]:]
+    
+    return  train_set, val_set, test_set, scaler
+    
+def df_to_dataset(df, n_samples, n_out, n_features):
+    features = df.to_numpy()[:, :n_samples*n_features]
+    targets = df.to_numpy()[:, :n_samples*n_features:]
+    ds = InertiaDataset(features, targets, n_samples, n_features, n_out, n_features)
+    return ds    
+    
 class InertiaDataset(Dataset):
     
     def __init__(self, input_data, target_data, sequence_length=24,
@@ -59,17 +84,21 @@ class InertiaDataset(Dataset):
     
     def __getitem__(self, idx):
         s_len = self.sequence_length
+        o_len = self.output_length
+        o_feat = self.target_features
         n_feat = self.in_features
         input_sequence = torch.zeros(s_len, n_feat)
-        target = tensor(self.target_data[idx]) # Try to predict one step at a time
+        target_sequence = torch.zeros(o_len, o_feat)
         for i in range(self.in_features):
             input_sequence[:, i] = tensor(self.input_data[idx, i * s_len:
                                                           (i + 1) * s_len])
-        return input_sequence, target
+        for i in range(self.target_features):
+            target_sequence[:, i] = tensor(self.target_data[idx, i*o_len:(i + 1) * o_len])
+        return input_sequence, target_sequence
 
 class Stacked_LSTM(nn.Module):
     
-    def __init__(self, n_inputs, hidden1=100, hidden2=100, dropout_lvl=0.1):
+    def __init__(self, n_inputs=6, hidden1=128, hidden2=128, dropout_lvl=0.1):
         
         super(Stacked_LSTM, self).__init__()
         self.hidden1 = hidden1
@@ -109,6 +138,31 @@ class Stacked_LSTM(nn.Module):
         outputs = torch.cat(outputs, dim=1)
         return outputs
 
-
-#data = pd.read_csv("Data/CleanedTrainingset16-22.csv", index_col=0)
+def training_loop(model, train_loader, val_loader, optimizer, criterion,
+                  learning_rate = 1e-3, n_epochs=10):
+    training_loss = []
+    validation_loss =[]
+    for epoch in range(n_epochs):
+        model.train()
+        training_loss = 0
+        # Training loop
+        for features, targets in train_loader:
+            optimizer.zero_grad()
+            outputs = model(features)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+            training_loss += loss.item()
         
+        # Validation loop
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for features, targets in val_loader:
+                outputs = model(features)
+                loss = criterion(outputs, targets)
+                val_loss += loss.item()
+        
+        
+        
+
