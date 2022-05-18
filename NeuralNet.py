@@ -43,11 +43,19 @@ def to_supervised(df, n_in, n_out, input_names, output_names):
     supervised.dropna(inplace=True)
     return supervised
 
+def hrs_to_time_of_day(hours):
+    return np.sin(hours*2*np.pi/24)
+
+def mnths_to_time_of_year(mnths):
+    return np.sin(mnths*2*np.pi/12)
+
 def get_split_sets(split=(0.8,0.05,0.15), scaler=MinMaxScaler(feature_range=(0,1)),
              data_path=datafile_path, scale_columns=scale_columns,
              input_names=input_names, output_names=output_names, n_samples=24, n_out=1):
     # Perform a train-val-test split, scale data and return datasets
     dataset = pd.read_csv(datafile_path, index_col=0)
+    dataset["month"] = mnths_to_time_of_year(dataset["month"])
+    dataset["hour"] = hrs_to_time_of_day(dataset["hour"])
     dataset[scale_columns] = scaler.fit_transform(dataset[scale_columns])
     
     supervised = to_supervised(dataset, n_samples, n_out, input_names, output_names)
