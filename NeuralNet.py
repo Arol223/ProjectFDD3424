@@ -234,7 +234,7 @@ def training_loop(model, train_loader, val_loader, optimizer, criterion,
         #         val_loss += loss.item()
         if validation_loss[epoch] > validation_loss[epoch - 1]:
             print("Early stopping because validation loss increased")
-            print("I trained for {} epochs".format(epoch))
+            print("I trained for {} epochs".format(epoch + 1))
             final_epoch = epoch
             break 
     return training_loss, validation_loss, final_epoch
@@ -251,8 +251,8 @@ def predict(test_loader, model):
             out_true = torch.cat((out_true, y), 0)
     return output_pred, out_true
 
-def load_model(path):
-    model = MultilayerLSTM()
+def load_model(path, n_layers, n_hidden, drpout_lvl):
+    model = MultilayerLSTM(n_layers=n_layers, n_hidden=n_hidden, drpout_lvl=drpout_lvl)
     model.load_state_dict(torch.load(path))
     return model
 def save_model(model, name):
@@ -272,16 +272,16 @@ def test_model(test_loader, model, out_features=output_names):
     return yh_df, y_df
 
 def main():
-    train, val, test, scaler = get_split_sets(n_samples=168)
-    test = df_to_dataset(test, 168, 1, 6)
-    train = df_to_dataset(train, 168, 1, 6)
-    val = df_to_dataset(val, 168, 1, 6)
+    train, val, test, scaler = get_split_sets(n_samples=24)
+    test = df_to_dataset(test, 24, 1, 6)
+    train = df_to_dataset(train, 24, 1, 6)
+    val = df_to_dataset(val, 24, 1, 6)
     
     train_loader = DataLoader(train, batch_size=32, shuffle=False)
     val_loader = DataLoader(val, batch_size=8, shuffle=False)
     test_loader = DataLoader(test, batch_size=1, shuffle=False)
     learning_rate = 5e-4
-    model = MultilayerLSTM()
+    model = MultilayerLSTM(n_hidden=512, drpout_lvl=0.5)
     
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.MSELoss()
@@ -289,7 +289,7 @@ def main():
     training_loss, validation_loss, epochs = training_loop(
         model, train_loader, val_loader, optimizer, criterion, n_epochs=10
         )
-    save_model(model, "FirstModel_10_Epochs_1weekdata")    
+    save_model(model, "SecondModel_10_Epochs_width=512,drpout=0.5")    
     
     return training_loss, validation_loss, epochs
     
