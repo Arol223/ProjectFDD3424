@@ -7,3 +7,4 @@
 .spyproject/config/workspace.ini
 Data/InertiaData/Inertia2016-2022.csv
 *.pyc
+__pycache__/NeuralNet.cpython-38.pyc
