@@ -17,6 +17,7 @@ from torch.jit import script, trace
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from matplotlib import pyplot as plt
 
 input_names = ("Inertia[GW]", "Total_production", "Share_Wind", "Share_Conv","month", "hour")
 output_names = ("Inertia[GW]","Total_production", "Share_Wind", "Share_Conv","month", "hour")
@@ -64,7 +65,7 @@ def get_split_sets(split=(0.8,0.05,0.15), scaler=MinMaxScaler(feature_range=(0,1
     
 def df_to_dataset(df, n_samples, n_out, n_features):
     features = df.to_numpy()[:, :n_samples*n_features]
-    targets = df.to_numpy()[:, :n_samples*n_features:]
+    targets = df.to_numpy()[:, n_samples*n_features:]
     ds = InertiaDataset(features, targets, n_samples, n_features, n_out, n_features)
     return ds    
     
@@ -102,6 +103,33 @@ class MultilayerLSTM(nn.Module):
     
     def __init__(self, n_features=6, n_hidden=128, n_layers=2, drpout_lvl=0.2):
         super(MultilayerLSTM, self).__init__()
+        self.n_features = n_features
+        self.n_hidden = n_hidden
+        self.n_layers = n_layers
+        self.drpout_lvl = drpout_lvl
+        self.dropout = nn.Dropout(drpout_lvl)
+    
+        self.lstm = nn.LSTM(
+            input_size=n_features,
+            hidden_size=n_hidden,
+            batch_first=True,
+            num_layers=n_layers,
+            dropout=drpout_lvl
+            )
+        self.linear = nn.Linear(
+            in_features=self.n_hidden,
+            out_features=self.n_features
+            )
+    def forward(self, X):
+        batch_size = X.shape[0]
+        h0 = torch.zeros(self.n_layers, batch_size, self.n_hidden).requires_grad_()
+        c0 = torch.zeros(self.n_layers, batch_size, self.n_hidden).requires_grad_()
+    
+        output, (hn, cn) = self.lstm(X, (h0, c0))
+        
+        out = self.dropout(hn[-1,:,:])
+        out = self.linear(hn[-1,:,:]) # First dim of hn is num_layers. Want only the last hidden state.
+        return out
         
 class Stacked_LSTM(nn.Module):
     # Attempt with LSTMCell
@@ -144,32 +172,139 @@ class Stacked_LSTM(nn.Module):
             outputs.append(output)
         outputs = torch.cat(outputs, dim=1)
         return outputs
+def train_model(data_loader, model, criterion, optimizer):
+    n_batches = len(data_loader)
+    tot_loss = 0
+    model.train()
+    for i, (X, y) in enumerate(data_loader):
+        out = model(X)
+        loss = criterion(out, y.squeeze(dim=1))
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        tot_loss += loss.item()
+    avg_loss = tot_loss / n_batches
+    return avg_loss
+
+def validate_model(data_loader, model, criterion):
+    
+    n_batches = len(data_loader)
+    tot_loss = 0
+    
+    model.eval()
+    
+    with torch.no_grad():
+        for X, y in data_loader:
+            out = model(X)
+            tot_loss += criterion(out, y.squeeze(dim=1)).item()
+    avg_loss = tot_loss / n_batches
+    
+    return avg_loss 
 
 def training_loop(model, train_loader, val_loader, optimizer, criterion,
-                  learning_rate = 1e-3, n_epochs=10):
+                  n_epochs=10):
     training_loss = []
     validation_loss =[]
+    final_epoch = 0
     for epoch in range(n_epochs):
-        model.train()
-        training_loss = 0
-        # Training loop
-        for features, targets in train_loader:
-            optimizer.zero_grad()
-            outputs = model(features)
-            loss = criterion(outputs, targets)
-            loss.backward()
-            optimizer.step()
-            training_loss += loss.item()
+        print("Starting {}th epoch".format(epoch))
+        loss = train_model(train_loader, model, criterion, optimizer)
+        training_loss.append(loss)
+        val_loss = validate_model(val_loader, model, criterion)
+        validation_loss.append(val_loss)
+        # model.train()
+        # training_loss = 0
+        # # Training loop
+        # for features, targets in train_loader:
+        #     optimizer.zero_grad()
+        #     outputs = model(features)
+        #     loss = criterion(outputs, targets)
+        #     loss.backward()
+        #     optimizer.step()
+        #     training_loss += loss.item()
         
-        # Validation loop
-        model.eval()
-        val_loss = 0
-        with torch.no_grad():
-            for features, targets in val_loader:
-                outputs = model(features)
-                loss = criterion(outputs, targets)
-                val_loss += loss.item()
-        
-        
-        
+        # # Validation loop
+        # model.eval()
+        # val_loss = 0
+        # with torch.no_grad():
+        #     for features, targets in val_loader:
+        #         outputs = model(features)
+        #         loss = criterion(outputs, targets)
+        #         val_loss += loss.item()
+        if validation_loss[epoch] > validation_loss[epoch - 1]:
+            print("Early stopping because validation loss increased")
+            print("I trained for {} epochs".format(epoch))
+            final_epoch = epoch
+            break 
+    return training_loss, validation_loss, final_epoch
+            
+def predict(test_loader, model):
+    
+    output_pred = tensor([])
+    out_true = tensor([])
+    model.eval()
+    with torch.no_grad():
+        for X, y in test_loader:
+            y_hat = model(X)
+            output_pred = torch.cat((output_pred, y_hat), 0)
+            out_true = torch.cat((out_true, y), 0)
+    return output_pred, out_true
+
+def load_model(path):
+    model = MultilayerLSTM()
+    model.load_state_dict(torch.load(path))
+    return model
+def save_model(model, name):
+    torch.save(model.state_dict(), "Models/" + name + ".pt")
+    
+def test_model(test_loader, model, out_features=output_names):
+    yhat_col = "Forecasted Inertia"
+    y_col = "Actual Inertia"
+    test_df = pd.DataFrame()
+    y_hat, y = predict(test_loader, model)
+    y = y.squeeze(dim=1)
+    yh_df = pd.DataFrame()
+    y_df = pd.DataFrame()
+    for i, name in enumerate(out_features):
+        yh_df["Predicted " + name] = y_hat[:, i].numpy()
+        y_df["Actual " +name] = y[:, i].numpy()
+    return yh_df, y_df
+
+def main():
+    train, val, test, scaler = get_split_sets(n_samples=168)
+    test = df_to_dataset(test, 168, 1, 6)
+    train = df_to_dataset(train, 168, 1, 6)
+    val = df_to_dataset(val, 168, 1, 6)
+    
+    train_loader = DataLoader(train, batch_size=32, shuffle=False)
+    val_loader = DataLoader(val, batch_size=8, shuffle=False)
+    test_loader = DataLoader(test, batch_size=1, shuffle=False)
+    learning_rate = 5e-4
+    model = MultilayerLSTM()
+    
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    criterion = nn.MSELoss()
+    
+    training_loss, validation_loss, epochs = training_loop(
+        model, train_loader, val_loader, optimizer, criterion, n_epochs=10
+        )
+    save_model(model, "FirstModel_10_Epochs_1weekdata")    
+    
+    return training_loss, validation_loss, epochs
+    
+if __name__=='__main__':
+    training_loss, validation_loss, epochs = main()
+    
+# model = load_model("Models/FirstTrainedModel.pt")
+#train, val, test, scaler = get_split_sets()
+
+# test_set = df_to_dataset(test, 24, 1, 6)
+
+# test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
+
+# yh, y = test_model(test_loader, model)
+
+         
+
 
