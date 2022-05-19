@@ -361,7 +361,7 @@ def main():
     mdl_param_str = str(model_params).replace(" ", '').replace(':', '_').replace('{','').replace('}','')
     model_name = ("Model_" + mdl_param_str +"_"+ "_Batch_size_"
                + str(BATCH_SIZE_TRAIN) + "Epochs_" + str(epochs)
-               + "_Seed_" + str(seed))
+               + "_Seed_" + str(seed) + "LBFGS")
     save_model(
         model, model_name
                )    
