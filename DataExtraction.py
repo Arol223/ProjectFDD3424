@@ -182,10 +182,11 @@ def get_training_data(df, labels=training_labels):
         df.set_index("Time", inplace=True)
     except KeyError:
         print("Index already set to time")
-    
+    df.index = pd.to_datetime(df.index)
     training_df = df.filter(labels, axis=1)
     
     training_df["month"] = training_df.index.month
+    training_df["day"] = training_df.index.day_of_year
     training_df["hour"] = training_df.index.hour
     # for label in labels:
     #     mean = training_df[label].mean()

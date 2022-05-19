@@ -19,11 +19,13 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from matplotlib import pyplot as plt
 
-input_names = ("Inertia[GW]", "Total_production", "Share_Wind", "Share_Conv","month", "hour")
-output_names = ("Inertia[GW]","Total_production", "Share_Wind", "Share_Conv","month", "hour")
-datafile_path = "Data/CleanedTrainingset16-22.csv"
+input_names = ("Inertia[GW]", "Total_production", "Share_Wind", "Share_Conv","day", "hour")
+output_names = ("Inertia[GW]","Total_production", "Share_Wind", "Share_Conv","day", "hour")
+datafile_path = "Data/CleanedTrainingset16-22_new_.csv"
 scale_columns = ["Inertia[GW]","Total_production", "Share_Wind", "Share_Conv",
-                 "month", "hour"]
+                 "day", "hour"]
+norm_columns = ["Inertia[GW]","Total_production", "Share_Wind", "Share_Conv"]
+
 def to_supervised(df, n_in, n_out, input_names, output_names):
     cols = []
     names = []
@@ -49,14 +51,23 @@ def hrs_to_time_of_day(hours):
 def mnths_to_time_of_year(mnths):
     return np.sin(mnths*2*np.pi/12)
 
-def get_split_sets(split=(0.8,0.05,0.15), scaler=MinMaxScaler(feature_range=(0,1)),
-             data_path=datafile_path, scale_columns=scale_columns,
-             input_names=input_names, output_names=output_names, n_samples=24, n_out=1):
+def days_to_time_of_year(days):
+    return np.sin(days*2*np.pi/365)
+
+def get_split_sets(
+        split=(0.8,0.05,0.15), scaler=MinMaxScaler(feature_range=(-1,1)), 
+        normalizer=StandardScaler(), data_path=datafile_path,
+        scale_columns=scale_columns, input_names=input_names,
+        output_names=output_names, n_samples=24, n_out=1
+             ):
     # Perform a train-val-test split, scale data and return datasets
     dataset = pd.read_csv(datafile_path, index_col=0)
-    dataset["month"] = mnths_to_time_of_year(dataset["month"])
+    dataset.drop("month", axis=1, inplace=True)
+    dataset["day"] = days_to_time_of_year(dataset["day"])
+    
     dataset["hour"] = hrs_to_time_of_day(dataset["hour"])
     dataset[scale_columns] = scaler.fit_transform(dataset[scale_columns])
+    dataset[norm_columns] = normalizer.fit_transform(dataset[norm_columns])
     
     supervised = to_supervised(dataset, n_samples, n_out, input_names, output_names)
     l = len(supervised)
@@ -69,7 +80,7 @@ def get_split_sets(split=(0.8,0.05,0.15), scaler=MinMaxScaler(feature_range=(0,1
     val_set = supervised.iloc[r_val[0]:r_val[1]]
     test_set = supervised.iloc[r_test[0]:]
     
-    return  train_set, val_set, test_set, scaler
+    return  train_set, val_set, test_set, scaler, normalizer
     
 def df_to_dataset(df, n_samples, n_out, n_features):
     features = df.to_numpy()[:, :n_samples*n_features]
@@ -180,18 +191,29 @@ class Stacked_LSTM(nn.Module):
             outputs.append(output)
         outputs = torch.cat(outputs, dim=1)
         return outputs
-def train_model(data_loader, model, criterion, optimizer):
+def train_model(data_loader, model, criterion, optimizer, mode="norm"):
     n_batches = len(data_loader)
     tot_loss = 0
     model.train()
-    for i, (X, y) in enumerate(data_loader):
-        out = model(X)
-        loss = criterion(out, y.squeeze(dim=1))
+    if mode == "norm":
+        for i, (X, y) in enumerate(data_loader):
+            out = model(X)
+            loss = criterion(out, y.squeeze(dim=1))
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            tot_loss += loss.item()
+    elif mode == "LBFGS":
+        X, y = next(iter(data_loader)) # LBFGS uses full batch training
+        def closure():
+            optimizer.zero_grad()
+            out = model(X)
+            loss = criterion(out, y.squeeze(dim=1))
+            loss.backward()
+            return loss
+        optimizer.step(closure)
         
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        tot_loss += loss.item()
     avg_loss = tot_loss / n_batches
     return avg_loss
 
@@ -211,16 +233,18 @@ def validate_model(data_loader, model, criterion):
     return avg_loss 
 
 def training_loop(model, train_loader, val_loader, optimizer, criterion,
-                  n_epochs=10):
+                  n_epochs=10, early_stopping=True, mode="norm"):
     training_loss = []
     validation_loss =[]
     final_epoch = 0
     for epoch in range(n_epochs):
-        print("Starting {}th epoch".format(epoch))
-        loss = train_model(train_loader, model, criterion, optimizer)
+        print("Starting {}th epoch".format(epoch + 1))
+        loss = train_model(train_loader, model, criterion, optimizer,
+                           mode=mode)
         training_loss.append(loss)
         val_loss = validate_model(val_loader, model, criterion)
         validation_loss.append(val_loss)
+        final_epoch = epoch
         # model.train()
         # training_loss = 0
         # # Training loop
@@ -240,11 +264,15 @@ def training_loop(model, train_loader, val_loader, optimizer, criterion,
         #         outputs = model(features)
         #         loss = criterion(outputs, targets)
         #         val_loss += loss.item()
-        if validation_loss[epoch] > validation_loss[epoch - 1]:
-            print("Early stopping because validation loss increased")
-            print("I trained for {} epochs".format(epoch + 1))
-            final_epoch = epoch
-            break 
+        if early_stopping:
+            if len(validation_loss) >= 5:
+                median = np.median(validation_loss[-5:])
+                
+                if validation_loss[epoch] > median:
+                    print("Early stopping because validation loss increased")
+                    print("I trained for {} epochs".format(epoch + 1))
+                    break 
+        
     return training_loss, validation_loss, final_epoch
             
 def predict(test_loader, model):
@@ -276,34 +304,78 @@ def test_model(test_loader, model, out_features=output_names):
     y_df = pd.DataFrame()
     for i, name in enumerate(out_features):
         yh_df["Predicted " + name] = y_hat[:, i].numpy()
-        y_df["Actual " +name] = y[:, i].numpy()
+        y_df["Actual " + name] = y[:, i].numpy()
     return yh_df, y_df
 
+def prepare_evaluation(
+        model_name, model_params, test_name=None, plot_range=24*30,
+        set_params=[24, 1, 6]
+                       ):
+    if test_name is None:
+        test_name = model_name
+    _, _, test, scaler, normalizer = get_split_sets()
+    model_path = "Models/" + model_name + ".pt"
+    test_set = df_to_dataset(test, *set_params)
+    model = load_model(model_path, **model_params)
+    test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
+    yh, y = test_model(test_loader, model)
+    yh.index = test.index
+    y.index = test.index
+    actual_cols = ["Actual " + x for x in norm_columns]
+    pred_cols = ["Predicted " + x for x in norm_columns]
+    y[actual_cols] = normalizer.inverse_transform(y[actual_cols])
+    yh[pred_cols] = normalizer.inverse_transform(yh[pred_cols])
+    y.iloc[:] = scaler.inverse_transform(y.iloc[:])
+    yh.iloc[:] = scaler.inverse_transform(yh.iloc[:])
+    total_test_df = pd.concat([yh,y], axis=1)
+    total_test_df.to_csv("Predictions/" + test_name + ".csv")
+    sub = total_test_df.iloc[-1 - plot_range:-1]
+    return total_test_df, sub
+    
 def main():
-    train, val, test, scaler = get_split_sets(n_samples=24)
+    seed = torch.initial_seed()
+    model_params = {"n_hidden":256, "drpout_lvl":0.2, "n_layers":2}
+    train, val, test, scaler, normalizer = get_split_sets(n_samples=24)
     test = df_to_dataset(test, 24, 1, 6)
     train = df_to_dataset(train, 24, 1, 6)
     val = df_to_dataset(val, 24, 1, 6)
     
-    train_loader = DataLoader(train, batch_size=32, shuffle=False)
+    #BATCH_SIZE_TRAIN = 256
+    BATCH_SIZE_TRAIN = len(train) # Use this for LBFGSar
+    n_epochs = 5
+    early_stopping = False
+    train_loader = DataLoader(train, BATCH_SIZE_TRAIN, shuffle=False)
     val_loader = DataLoader(val, batch_size=8, shuffle=False)
     test_loader = DataLoader(test, batch_size=1, shuffle=False)
     learning_rate = 5e-4
-    model = MultilayerLSTM(n_hidden=512, drpout_lvl=0.5)
+    model = MultilayerLSTM(**model_params)
     
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    #optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.LBFGS(model.parameters())
     criterion = nn.MSELoss()
     
     training_loss, validation_loss, epochs = training_loop(
-        model, train_loader, val_loader, optimizer, criterion, n_epochs=10
+        model, train_loader, val_loader, optimizer, criterion,
+        n_epochs=n_epochs, early_stopping=early_stopping, mode='LBFGS'
         )
-    save_model(model, "SecondModel_10_Epochs_width=512,drpout=0.5")    
+    mdl_param_str = str(model_params).replace(" ", '').replace(':', '_').replace('{','').replace('}','')
+    model_name = ("Model_" + mdl_param_str +"_"+ "_Batch_size_"
+               + str(BATCH_SIZE_TRAIN) + "Epochs_" + str(epochs)
+               + "_Seed_" + str(seed))
+    save_model(
+        model, model_name
+               )    
     
-    return training_loss, validation_loss, epochs
+    
+    return training_loss, validation_loss, model_name, model_params
     
 if __name__=='__main__':
-    training_loss, validation_loss, epochs = main()
-    
+    training_loss, validation_loss, model_name, model_params = main()
+
+# model_name = "Model_'n_hidden'_256,'drpout_lvl'_0.2,'n_layers'_2__Batch_size_256Epochs_8_Seed_167566065688400"
+# model_params = {'n_hidden': 256, 'drpout_lvl': 0.2, 'n_layers': 2}
+# tot, sub = prepare_evaluation(model_name, model_params)
+
 # model = load_model("Models/FirstTrainedModel.pt")
 #train, val, test, scaler = get_split_sets()
 
