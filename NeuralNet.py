@@ -139,7 +139,8 @@ class MultilayerLSTM(nn.Module):
             in_features=self.n_hidden,
             out_features=self.n_features
             )
-    def forward(self, X):
+    def forward(self, X, future_preds=0):
+        outputs = []
         batch_size = X.shape[0]
         h0 = torch.zeros(self.n_layers, batch_size, self.n_hidden).requires_grad_()
         c0 = torch.zeros(self.n_layers, batch_size, self.n_hidden).requires_grad_()
@@ -148,7 +149,12 @@ class MultilayerLSTM(nn.Module):
         
         out = self.dropout(hn[-1,:,:])
         out = self.linear(hn[-1,:,:]) # First dim of hn is num_layers. Want only the last hidden state.
-        return out
+        outputs.append(out)
+        for i in range(future_preds):
+            output, (hn, cn) = self.lstm(out, (hn, cn))
+            output = self.linear(hn)
+            outputs.append(output)
+        return out, outputs
         
 class Stacked_LSTM(nn.Module):
     # Attempt with LSTMCell
@@ -197,7 +203,7 @@ def train_model(data_loader, model, criterion, optimizer, mode="norm"):
     model.train()
     if mode == "norm":
         for i, (X, y) in enumerate(data_loader):
-            out = model(X)
+            out, _ = model(X)
             loss = criterion(out, y.squeeze(dim=1))
             
             optimizer.zero_grad()
@@ -208,7 +214,7 @@ def train_model(data_loader, model, criterion, optimizer, mode="norm"):
         X, y = next(iter(data_loader)) # LBFGS uses full batch training
         def closure():
             optimizer.zero_grad()
-            out = model(X)
+            out, _ = model(X)
             loss = criterion(out, y.squeeze(dim=1))
             loss.backward()
             return loss
@@ -226,7 +232,7 @@ def validate_model(data_loader, model, criterion):
     
     with torch.no_grad():
         for X, y in data_loader:
-            out = model(X)
+            out, _ = model(X)
             tot_loss += criterion(out, y.squeeze(dim=1)).item()
     avg_loss = tot_loss / n_batches
     
@@ -275,17 +281,19 @@ def training_loop(model, train_loader, val_loader, optimizer, criterion,
         
     return training_loss, validation_loss, final_epoch
             
-def predict(test_loader, model):
+def predict(test_loader, model, future_preds=0):
     
     output_pred = tensor([])
     out_true = tensor([])
+    out_future = tensor([])
     model.eval()
     with torch.no_grad():
         for X, y in test_loader:
-            y_hat = model(X)
+            y_hat, future = model(X, future_preds)
             output_pred = torch.cat((output_pred, y_hat), 0)
             out_true = torch.cat((out_true, y), 0)
-    return output_pred, out_true
+            out_future = torch.cat((out_future, future), 0)
+    return output_pred, out_true, future
 
 def load_model(path, n_layers, n_hidden, drpout_lvl):
     model = MultilayerLSTM(n_layers=n_layers, n_hidden=n_hidden, drpout_lvl=drpout_lvl)
@@ -294,22 +302,26 @@ def load_model(path, n_layers, n_hidden, drpout_lvl):
 def save_model(model, name):
     torch.save(model.state_dict(), "Models/" + name + ".pt")
     
-def test_model(test_loader, model, out_features=output_names):
+def test_model(test_loader, model, out_features=output_names, future_preds=0):
     yhat_col = "Forecasted Inertia"
     y_col = "Actual Inertia"
     test_df = pd.DataFrame()
-    y_hat, y = predict(test_loader, model)
+    y_hat, y, future = predict(test_loader, model, future_preds=0)
     y = y.squeeze(dim=1)
     yh_df = pd.DataFrame()
     y_df = pd.DataFrame()
+    future_df = pd.DataFrame()
     for i, name in enumerate(out_features):
-        yh_df["Predicted " + name] = y_hat[:, i].numpy()
+        yh_df["Predicted (1h)" + name] = y_hat[:, i].numpy()
         y_df["Actual " + name] = y[:, i].numpy()
-    return yh_df, y_df
+        fut_tmp = np.zeros(future_preds)
+        fut_tmp[:] = np.nan
+        future_df["Predicted ({}h)".format(future_preds)] = fut_tmp.append(future[:, i])
+    return yh_df, y_df, future_df
 
 def prepare_evaluation(
         model_name, model_params, test_name=None, plot_range=24*30,
-        set_params=[24, 1, 6]
+        set_params=[24, 1, 6], future_preds=0
                        ):
     if test_name is None:
         test_name = model_name
@@ -318,16 +330,23 @@ def prepare_evaluation(
     test_set = df_to_dataset(test, *set_params)
     model = load_model(model_path, **model_params)
     test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
-    yh, y = test_model(test_loader, model)
+    yh, y, future = test_model(test_loader, model, future_preds=future_preds)
     yh.index = test.index
     y.index = test.index
+    future.index = test.index.append(pd.date_range(start=test.index[-1],
+                                                   periods=future_preds + 1,
+                                                   freq='1H'))
     actual_cols = ["Actual " + x for x in norm_columns]
-    pred_cols = ["Predicted " + x for x in norm_columns]
+    pred_cols = ["Predicted (1h)" + x for x in norm_columns]
+    future_cols = ["Predicted ({}h) ".format(future_preds) + x for x in norm_columns]
     y[actual_cols] = normalizer.inverse_transform(y[actual_cols])
     yh[pred_cols] = normalizer.inverse_transform(yh[pred_cols])
+    future[future_cols] = normalizer.inverse_transform(future[future_cols])
     y.iloc[:] = scaler.inverse_transform(y.iloc[:])
     yh.iloc[:] = scaler.inverse_transform(yh.iloc[:])
-    total_test_df = pd.concat([yh,y], axis=1)
+    future.iloc[:] = scaler.inverse_transform(future.iloc[:])
+    total_test_df = pd.concat([yh,y, future], axis=1)
+    total_test_df.dropna(axis=0, inplace=True)
     total_test_df.to_csv("Predictions/" + test_name + ".csv")
     sub = total_test_df.iloc[-1 - plot_range:-1]
     return total_test_df, sub
@@ -369,12 +388,12 @@ def main():
     
     return training_loss, validation_loss, model_name, model_params
     
-if __name__=='__main__':
-    training_loss, validation_loss, model_name, model_params = main()
+# if __name__=='__main__':
+    #training_loss, validation_loss, model_name, model_params = main()
 
-# model_name = "Model_'n_hidden'_256,'drpout_lvl'_0.2,'n_layers'_2__Batch_size_256Epochs_8_Seed_167566065688400"
-# model_params = {'n_hidden': 256, 'drpout_lvl': 0.2, 'n_layers': 2}
-# tot, sub = prepare_evaluation(model_name, model_params)
+model_name= "Model_'n_hidden'_256,'drpout_lvl'_0.2,'n_layers'_2__Batch_size_44569Epochs_4_Seed_186903325349100_LBFGS"
+model_params = {'n_hidden': 256, 'drpout_lvl': 0.2, 'n_layers': 2}
+tot, sub = prepare_evaluation(model_name, model_params, future_preds=1)
 
 # model = load_model("Models/FirstTrainedModel.pt")
 #train, val, test, scaler = get_split_sets()
