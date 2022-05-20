@@ -11,3 +11,7 @@ __pycache__/NeuralNet.cpython-38.pyc
 *.pyc
 __pycache__/NeuralNet.cpython-38.pyc
 __pycache__/DataExtraction.cpython-38.pyc
+.spyproject/config/workspace.ini
+__pycache__/DataExtraction.cpython-38.pyc
+__pycache__/NeuralNet.cpython-38.pyc
+Plots/Predicted_Inertia_5Epochs_width256_LBFGS.png
