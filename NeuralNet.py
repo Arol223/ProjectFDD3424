@@ -58,7 +58,7 @@ def mnths_to_time_of_year(mnths):
     return np.sin(mnths*2*np.pi/12)
 
 def days_to_time_of_year(days):
-    return np.sin(days*2*np.pi/365)
+    return np.cos(days*2*np.pi/365)
 def to_sparse_set(df, step_size):
     # return a dataframe where entries between steps defined by step size are omitted
     return df.iloc[::step_size, :]
@@ -128,7 +128,7 @@ class InertiaDataset(Dataset):
             target_sequence[:, i] = tensor(self.target_data[idx, i*o_len:(i + 1) * o_len])
         return input_sequence, target_sequence
 
-class MLPPredictor(nn.module):
+class MLPPredictor(nn.Module):
     
     def __init(self, n_features, input_len, n_hidden, n_layers):
         # ReLU activation, Linear output
@@ -523,9 +523,9 @@ def main():
 # if __name__=='__main__':
 #     training_loss, validation_loss, model_name, model_params = main()
 
-model_name = "LBFGS_1_layer_baseline"
-model_params = {"n_hidden":256, "drpout_lvl":0.2, "n_layers":1}
-tot, sub = run_future_test(model_name, model_params, save=False)
+# model_name = "LBFGS_1_layer_baseline"
+# model_params = {"n_hidden":256, "drpout_lvl":0.2, "n_layers":1}
+# tot, sub = run_future_test(model_name, model_params, save=False)
 
 # model_name= "Model_'n_hidden'_256,'drpout_lvl'_0.2,'n_layers'_2__Batch_size_44569Epochs_4_Seed_186903325349100_LBFGS"
 # model_params = {'n_hidden': 256, 'drpout_lvl': 0.2, 'n_layers': 2}
