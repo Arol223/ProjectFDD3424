@@ -130,21 +130,23 @@ class InertiaDataset(Dataset):
 
 class MLPPredictor(nn.Module):
     
-    def __init(self, n_features, input_len, n_hidden, n_layers):
+    def __init__(self, n_features, input_len, n_hidden, n_layers):
         # ReLU activation, Linear output
-        super(MLPPredictor, self)
+        super(MLPPredictor, self).__init__()
         self.n_features = n_features
-        self.relu = nn.ReLU()
-        self.layers = nn.Sequential(
-            nn.Flatten(), nn.Linear(in_features=n_features*input_len, out_features=n_hidden) 
-            )
+        relu = nn.ReLU()
+        layers = [nn.Linear(in_features=n_features, out_features=n_hidden)]#nn.Sequential(
+                
+            
         for i in range(n_layers):
-            self.layers.append(self.relu)
-            self.layers.append(nn.Linear(n_hidden, n_hidden))
-        self.layers.append(nn.Linear(n_hidden, n_features))
-        
-        def forward(self, X):
-            return self.layers(X)
+            layers.append(nn.Dropout(p=0.2))
+            layers.append(relu)
+            layers.append(nn.Linear(n_hidden, n_hidden))
+        layers.append(nn.Linear(n_hidden, n_features))
+        self.layers = nn.Sequential(*layers)
+    
+    def forward(self, X):
+        return self.layers(X)
 
 def train_MLP(MLP, data_loader, criterion, optimizer):
     
@@ -152,9 +154,9 @@ def train_MLP(MLP, data_loader, criterion, optimizer):
     tot_loss = 0
     MLP.train()
     for i, (X, y) in enumerate(data_loader):
-
+        #print(X.shape)
         out = MLP(X)
-        loss = criterion(out, y.squeeze(dim=1))
+        loss = criterion(out, y)
             
         optimizer.zero_grad()
         loss.backward()
@@ -170,7 +172,7 @@ def validate_MLP(MLP, data_loader, criterion):
     with torch.no_grad():
         for X, y in data_loader:
             out = MLP(X)
-            tot_loss += criterion(out, y.squeeze(dim=1)).item()
+            tot_loss += criterion(out, y).item()
     avg_loss = tot_loss / n_batches
     
     return avg_loss 
@@ -281,6 +283,8 @@ class Stacked_LSTM(nn.Module):
             outputs.append(output)
         outputs = torch.cat(outputs, dim=1)
         return outputs
+    
+
     
 def train_model(data_loader, model, criterion, optimizer, mode="norm"):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -481,9 +485,56 @@ def MAPE(df, actual='Actual Inertia[GW]', predicted='Predicted Inertia[GW]'):
     std = 100 * np.std(np.abs((act - pred) / act))
     return mape, std
 
+def test_MLP():
+    path = (
+        "Models/MLP_'n_hidden'_256,'drpout_lvl'_0.2,'n_layers'_2.pt"
+        )
+    out_features = ("Inertia[GW]","Total_production", "Share_Wind", "Share_Conv","day", "hour")
+    model = MLPPredictor(6,1,512,1)
+    model.load_state_dict(torch.load(path))
+    _, _, test, scaler, normalizer = get_split_sets(n_samples=1)
+    test_set = df_to_dataset(test, 1, 1, 6)
+    loader = DataLoader(test_set, batch_size=1)
+    model.eval()
+    yh, y = pd.DataFrame(), pd.DataFrame()
+    yh.index = test.index
+    y.index = test.index
+    output_pred = tensor([])
+    out_true = tensor([])
+    model.eval()
+    with torch.no_grad():
+        for X, y_ in loader:
+            y_hat = model(X)
+            #print(y_hat)
+            output_pred = torch.cat((output_pred, y_hat.squeeze(dim=1)), 0)
+            out_true = torch.cat((out_true, y_.squeeze(dim=1)), 0)
+    y_hat = output_pred.numpy()
+    y_true = out_true.numpy()
+    for i, name in enumerate(out_features):
+        
+        yh["Predicted " + name] = y_hat[:, i]
+        y["Actual " + name] = y_true[:, i]
+    
+
+    
+    actual_cols = ["Actual " + x for x in norm_columns]
+    pred_cols = ["Predicted " + x for x in norm_columns]
+    plot_range=24*30
+
+    y.iloc[:] = scaler.inverse_transform(y.iloc[:])
+    yh.iloc[:] = scaler.inverse_transform(yh.iloc[:])
+    y[actual_cols] = normalizer.inverse_transform(y[actual_cols])
+    yh[pred_cols] = normalizer.inverse_transform(yh[pred_cols])
+    total_test_df = pd.concat([yh,y], axis=1)
+    total_test_df.dropna(axis=0, inplace=True)
+    
+    total_test_df.to_csv("Predictions/" + "MLP" + ".csv")
+    sub = total_test_df.iloc[-1 - plot_range:-1]
+    return total_test_df, sub
+        
 def main():
     seed = torch.initial_seed()
-    model_params = {"n_hidden":256, "drpout_lvl":0.2, "n_layers":1}
+    model_params = {"n_hidden":256, "drpout_lvl":0.2, "n_layers":2}
     train, val, test, scaler, normalizer = get_split_sets(n_samples=24)
     test = df_to_dataset(test, 24, 1, 6)
     train = df_to_dataset(train, 24, 1, 6)
@@ -492,7 +543,7 @@ def main():
     BATCH_SIZE_TRAIN = 256
     #BATCH_SIZE_TRAIN = len(train) # Use this for LBFGSar
     n_epochs = 40
-    early_stopping = False  
+    early_stopping = True  
     train_loader = DataLoader(train, BATCH_SIZE_TRAIN, shuffle=False)
     val_loader = DataLoader(val, batch_size=8, shuffle=False)
     test_loader = DataLoader(test, batch_size=1, shuffle=False)
@@ -512,17 +563,57 @@ def main():
     # model_name = ("Model_" + mdl_param_str +"_"+ "_Batch_size_"
     #            + str(BATCH_SIZE_TRAIN) + "Epochs_" + str(epochs)
     #            + "_Seed_" + str(seed) + "LBFGS")
-    model_name = "Adam_1Layer_{}_epochs".format(epochs)
+    model_name = "Adam_2Layer_{}_epochs".format(epochs)
     save_model(
         model, model_name
                 )    
     
     
     return training_loss, validation_loss, model_name, model_params
+def MLP_main():
+    seed = torch.initial_seed()
+    model_params = {"n_hidden":256, "drpout_lvl":0.2, "n_layers":2}
+    train, val, test, scaler, normalizer = get_split_sets(n_samples=1)
+    test = df_to_dataset(test, 1, 1, 6)
+    train = df_to_dataset(train, 1, 1, 6)
+    val = df_to_dataset(val, 1, 1, 6)
     
-# if __name__=='__main__':
-#     training_loss, validation_loss, model_name, model_params = main()
+    BATCH_SIZE_TRAIN = 256
+    #BATCH_SIZE_TRAIN = len(train) # Use this for LBFGSar
+    n_epochs = 40
+    early_stopping = True  
+    train_loader = DataLoader(train, BATCH_SIZE_TRAIN, shuffle=False)
+    val_loader = DataLoader(val, batch_size=8, shuffle=False)
+    test_loader = DataLoader(test, batch_size=1, shuffle=False)
+    learning_rate = 5e-4
+    model = MLPPredictor(6, 1, 512, 1)
+    #model_path = "Models/Adam_1Layer.pt"
+    #model = load_model(model_path, **model_params)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate,weight_decay=1e-5)
+    #optimizer = optim.LBFGS(model.parameters())
+    criterion = nn.MSELoss()
+    
+    training_loss, validation_loss, epochs = MLP_training_loop(
+        model, train_loader, val_loader, optimizer, criterion,
+        n_epochs=n_epochs, early_stopping=early_stopping
+        )
+    mdl_param_str = str(model_params).replace(" ", '').replace(':', '_').replace('{','').replace('}','')
+    # model_name = ("Model_" + mdl_param_str +"_"+ "_Batch_size_"
+    #            + str(BATCH_SIZE_TRAIN) + "Epochs_" + str(epochs)
+    #            + "_Seed_" + str(seed) + "LBFGS")
+    model_name = "MLP_" + mdl_param_str
+    save_model(
+        model, model_name
+                )    
+    
+    
+    return training_loss, validation_loss, model_name, model_params
+if __name__=='__main__':
+     training_loss, validation_loss, model_name, model_params = main()
 
+
+# if __name__ == '__main__':
+#     training_loss, validation_loss, model_name, model_params = MLP_main()
 # model_name = "LBFGS_1_layer_baseline"
 # model_params = {"n_hidden":256, "drpout_lvl":0.2, "n_layers":1}
 # tot, sub = run_future_test(model_name, model_params, save=False)
