@@ -534,6 +534,7 @@ def test_MLP():
         
 def main():
     seed = torch.initial_seed()
+<<<<<<< Updated upstream
     model_params = {"n_hidden":256, "drpout_lvl":0.2, "n_layers":2}
     train, val, test, scaler, normalizer = get_split_sets(n_samples=24)
     test = df_to_dataset(test, 24, 1, 6)
@@ -542,28 +543,42 @@ def main():
     
     BATCH_SIZE_TRAIN = 256
     #BATCH_SIZE_TRAIN = len(train) # Use this for LBFGSar
+=======
+    model_params = {"n_hidden":32, "drpout_lvl":0.2, "n_layers":2}
+    train, val, test, scaler, normalizer = get_split_sets(n_samples=72,n_out=24)
+    test = df_to_dataset(test, 72, 24, 6)
+    train = df_to_dataset(train, 72, 24, 6)
+    val = df_to_dataset(val, 72, 24, 6)
+    
+    #BATCH_SIZE_TRAIN = 256
+    BATCH_SIZE_TRAIN = len(train) # Use this for LBFGSar
+>>>>>>> Stashed changes
     n_epochs = 40
     early_stopping = True  
     train_loader = DataLoader(train, BATCH_SIZE_TRAIN, shuffle=False)
-    val_loader = DataLoader(val, batch_size=8, shuffle=False)
+    val_loader = DataLoader(val, batch_size=256, shuffle=False)
     test_loader = DataLoader(test, batch_size=1, shuffle=False)
     learning_rate = 5e-4
     model = MultilayerLSTM(**model_params)
     #model_path = "Models/Adam_1Layer.pt"
     #model = load_model(model_path, **model_params)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    #optimizer = optim.LBFGS(model.parameters())
+    #optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.LBFGS(model.parameters())
     criterion = nn.MSELoss()
     
     training_loss, validation_loss, epochs = training_loop(
         model, train_loader, val_loader, optimizer, criterion,
-        n_epochs=n_epochs, early_stopping=early_stopping, mode='norm'#'LBFGS'
+        n_epochs=n_epochs, early_stopping=early_stopping, mode='LBFGS'#'norm'
         )
     mdl_param_str = str(model_params).replace(" ", '').replace(':', '_').replace('{','').replace('}','')
     # model_name = ("Model_" + mdl_param_str +"_"+ "_Batch_size_"
     #            + str(BATCH_SIZE_TRAIN) + "Epochs_" + str(epochs)
     #            + "_Seed_" + str(seed) + "LBFGS")
+<<<<<<< Updated upstream
     model_name = "Adam_2Layer_{}_epochs".format(epochs)
+=======
+    model_name = "LBFGS_2Layer_{}_epochs_longer_seq".format(epochs)
+>>>>>>> Stashed changes
     save_model(
         model, model_name
                 )    
@@ -578,6 +593,7 @@ def MLP_main():
     train = df_to_dataset(train, 1, 1, 6)
     val = df_to_dataset(val, 1, 1, 6)
     
+<<<<<<< Updated upstream
     BATCH_SIZE_TRAIN = 256
     #BATCH_SIZE_TRAIN = len(train) # Use this for LBFGSar
     n_epochs = 40
@@ -614,6 +630,11 @@ if __name__=='__main__':
 
 # if __name__ == '__main__':
 #     training_loss, validation_loss, model_name, model_params = MLP_main()
+=======
+if __name__=='__main__':
+    training_loss, validation_loss, model_name, model_params = main()
+
+>>>>>>> Stashed changes
 # model_name = "LBFGS_1_layer_baseline"
 # model_params = {"n_hidden":256, "drpout_lvl":0.2, "n_layers":1}
 # tot, sub = run_future_test(model_name, model_params, save=False)
