@@ -19,13 +19,14 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from matplotlib import pyplot as plt
 
-input_names = ("Inertia[GW]", "Total_production", "Share_Wind", "Share_Conv","day", "hour")
-output_names = ("Inertia[GW]","Total_production", "Share_Wind", "Share_Conv","day", "hour")
+input_names = ("Total_production", "day", "hour")#"Share_Wind", "Share_Conv",) #"Inertia[GW]",
+output_names = ("Inertia[GW]",)#"Total_production", "Share_Wind", "Share_Conv","day", "hour")
 datafile_path = "Data/CleanedTrainingset16-22_new_.csv"
-scale_columns = ["Inertia[GW]","Total_production", "Share_Wind", "Share_Conv",
+scale_columns = ["Inertia[GW]","Total_production", #"Share_Wind", "Share_Conv",
                  "day", "hour"]
-norm_columns = ["Inertia[GW]","Total_production", "Share_Wind", "Share_Conv"]
-
+norm_columns = ["Inertia[GW]","Total_production",]# "Share_Wind", "Share_Conv"]
+scale_columns_out = ["Inertia[GW]"]
+norm_columns_out = ["Inertia[GW]",]
 def to_supervised(df, n_in, n_out, input_names, output_names, sparse=False):
     # If sparse exclude overlap
     cols = []
@@ -67,7 +68,7 @@ def get_split_sets(
         split=(0.8,0.05,0.15), scaler=MinMaxScaler(feature_range=(-1,1)), 
         normalizer=StandardScaler(), data_path=datafile_path,
         scale_columns=scale_columns, input_names=input_names,
-        output_names=output_names, n_samples=24, n_out=1, sparse=False
+        output_names=output_names, n_samples=24, n_out=1, sparse=False,
              ):
     # Perform a train-val-test split, scale data and return datasets
     dataset = pd.read_csv(datafile_path, index_col=0)
@@ -93,10 +94,10 @@ def get_split_sets(
     
     return  train_set, val_set, test_set, scaler, normalizer
     
-def df_to_dataset(df, n_samples, n_out, n_features):
-    features = df.to_numpy()[:, :n_samples*n_features]
-    targets = df.to_numpy()[:, n_samples*n_features:]
-    ds = InertiaDataset(features, targets, n_samples, n_features, n_out, n_features)
+def df_to_dataset(df, n_samples, n_out, n_in_features, n_out_features):
+    features = df.to_numpy()[:, :n_samples*n_in_features]
+    targets = df.to_numpy()[:, n_samples*n_in_features:]
+    ds = InertiaDataset(features, targets, n_samples, n_in_features, n_out, n_out_features)
     return ds    
     
 class InertiaDataset(Dataset):
@@ -205,16 +206,18 @@ def MLP_training_loop(MLP, train_loader, val_loader, optimizer, criterion,
 
 class MultilayerLSTM(nn.Module):
     
-    def __init__(self, n_features=6, n_hidden=128, n_layers=2, drpout_lvl=0.2):
+    def __init__(self, n_in_features=6, n_out_features=6, 
+                 n_hidden=128, n_layers=2, drpout_lvl=0.2):
         super(MultilayerLSTM, self).__init__()
-        self.n_features = n_features
+        self.n_in_features = n_in_features
+        self.n_out_features = n_out_features
         self.n_hidden = n_hidden
         self.n_layers = n_layers
         self.drpout_lvl = drpout_lvl
         self.dropout = nn.Dropout(drpout_lvl)
     
         self.lstm = nn.LSTM(
-            input_size=n_features,
+            input_size=n_in_features,
             hidden_size=n_hidden,
             batch_first=True,
             num_layers=n_layers,
@@ -222,7 +225,7 @@ class MultilayerLSTM(nn.Module):
             )
         self.linear = nn.Linear(
             in_features=self.n_hidden,
-            out_features=self.n_features
+            out_features=self.n_out_features
             )
     def forward(self, X, future_preds=0):
         outputs = tensor([])
@@ -336,7 +339,8 @@ def validate_model(data_loader, model, criterion):
     return avg_loss 
 
 def training_loop(model, train_loader, val_loader, optimizer, criterion,
-                  n_epochs=10, early_stopping=True, mode="norm"):
+                  n_epochs=10, early_stopping=True, mode="norm",
+                  early_stopping_active=10):
     
     training_loss = []
     validation_loss =[]
@@ -350,10 +354,10 @@ def training_loop(model, train_loader, val_loader, optimizer, criterion,
         validation_loss.append(val_loss)
         final_epoch = epoch
         if early_stopping:
-            if len(validation_loss) >= 10:
-                median = np.median(validation_loss[-10:])
+            if len(validation_loss) >= early_stopping_active:
+                median = np.median(validation_loss[-early_stopping_active:])
                 
-                if validation_loss[epoch] > median:
+                if validation_loss[epoch] >= median:
                     print("Early stopping because validation loss increased")
                     print("I trained for {} epochs".format(epoch + 1))
                     break 
@@ -386,8 +390,9 @@ def predict(test_loader, model):
             
     return output_pred, out_true
 
-def load_model(path, n_layers, n_hidden, drpout_lvl):
-    model = MultilayerLSTM(n_layers=n_layers, n_hidden=n_hidden, drpout_lvl=drpout_lvl)
+def load_model(path, n_layers, n_hidden, drpout_lvl, n_in_features, n_out_features):
+    model = MultilayerLSTM(n_layers=n_layers, n_hidden=n_hidden, drpout_lvl=drpout_lvl,
+                           n_in_features=n_in_features, n_out_features=n_out_features)
     model.load_state_dict(torch.load(path))
     return model
 def save_model(model, name):
@@ -420,7 +425,7 @@ def test_model(test_loader, model, out_features=output_names):
 
 def prepare_evaluation(
         model_name, model_params, test_name=None, plot_range=24*30,
-        set_params=[24, 1, 6], save=True
+        set_params=[24, 1, 6, 6], save=True
                        ):
     if test_name is None:
         test_name = model_name
@@ -433,14 +438,21 @@ def prepare_evaluation(
     yh.index = test.index
     y.index = test.index
     
-    actual_cols = ["Actual " + x for x in norm_columns]
-    pred_cols = ["Predicted " + x for x in norm_columns]
-    
-
+    actual_cols_scale = ["Actual " + x for x in scale_columns]
+    pred_cols_scale = ["Predicted " + x for x in scale_columns]
+    actual_cols_norm = ["Actual " + x for x in norm_columns]
+    pred_cols_norm = ["Predicted " + x for x in norm_columns]
+    for col in scale_columns:
+        if "Actual " + col not in y.columns:
+            y["Actual " + col] = np.nan
+        if "Predicted " + col not in yh.columns:
+            yh["Predicted " + col] = np.nan 
     y.iloc[:] = scaler.inverse_transform(y.iloc[:])
     yh.iloc[:] = scaler.inverse_transform(yh.iloc[:])
-    y[actual_cols] = normalizer.inverse_transform(y[actual_cols])
-    yh[pred_cols] = normalizer.inverse_transform(yh[pred_cols])
+    y[actual_cols_norm] = normalizer.inverse_transform(y[actual_cols_norm])
+    yh[pred_cols_norm] = normalizer.inverse_transform(yh[pred_cols_norm])
+    y.dropna(axis=1, inplace=True)
+    yh.dropna(axis=1, inplace=True)
     total_test_df = pd.concat([yh,y], axis=1)
     total_test_df.dropna(axis=0, inplace=True)
     if save:
@@ -464,7 +476,7 @@ def run_future_test(
     #y.index = test.index
     
     actual_cols = ["Actual " + x for x in norm_columns]
-    pred_cols = ["Predicted " + x for x in norm_columns]
+    pred_cols = ["Predicted " + x for x in norm_columns_out]
     
     y[actual_cols] = normalizer.inverse_transform(y[actual_cols])
     yh[pred_cols] = normalizer.inverse_transform(yh[pred_cols])
@@ -535,49 +547,43 @@ def test_MLP():
 def main():
     seed = torch.initial_seed()
 
-    model_params = {"n_hidden":256, "drpout_lvl":0.2, "n_layers":2}
+    model_params = {"n_hidden":32, "drpout_lvl":0.4, "n_layers":2,
+                    "n_in_features":3, "n_out_features":1}
     train, val, test, scaler, normalizer = get_split_sets(n_samples=24)
-    test = df_to_dataset(test, 24, 1, 6)
-    train = df_to_dataset(train, 24, 1, 6)
-    val = df_to_dataset(val, 24, 1, 6)
+    test = df_to_dataset(test, 24, 1, 3, 1)
+    train = df_to_dataset(train, 24, 1, 3, 1)
+    val = df_to_dataset(val, 24, 1, 3, 1)
     
-    BATCH_SIZE_TRAIN = 256
-    #BATCH_SIZE_TRAIN = len(train) # Use this for LBFGSar
 
-    model_params = {"n_hidden":32, "drpout_lvl":0.2, "n_layers":2}
-    train, val, test, scaler, normalizer = get_split_sets(n_samples=72,n_out=24)
-    test = df_to_dataset(test, 72, 24, 6)
-    train = df_to_dataset(train, 72, 24, 6)
-    val = df_to_dataset(val, 72, 24, 6)
     
     #BATCH_SIZE_TRAIN = 256
     BATCH_SIZE_TRAIN = len(train) # Use this for LBFGSar
 
-    n_epochs = 40
+    n_epochs = 100
     early_stopping = True  
     train_loader = DataLoader(train, BATCH_SIZE_TRAIN, shuffle=False)
     val_loader = DataLoader(val, batch_size=256, shuffle=False)
     test_loader = DataLoader(test, batch_size=1, shuffle=False)
     learning_rate = 5e-4
     model = MultilayerLSTM(**model_params)
-    #model_path = "Models/Adam_1Layer.pt"
+    #model_path = 'Models/Adam_1Layer_79_epochs_64_hn_no_input_inertia.pt'
     #model = load_model(model_path, **model_params)
-    #optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    #optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     optimizer = optim.LBFGS(model.parameters())
     criterion = nn.MSELoss()
     
     training_loss, validation_loss, epochs = training_loop(
         model, train_loader, val_loader, optimizer, criterion,
-        n_epochs=n_epochs, early_stopping=early_stopping, mode='LBFGS'#'norm'
-        )
+        n_epochs=n_epochs, early_stopping=early_stopping, mode='LBFGS',#'norm','LBFGS'
+        early_stopping_active=15)
     mdl_param_str = str(model_params).replace(" ", '').replace(':', '_').replace('{','').replace('}','')
     # model_name = ("Model_" + mdl_param_str +"_"+ "_Batch_size_"
     #            + str(BATCH_SIZE_TRAIN) + "Epochs_" + str(epochs)
     #            + "_Seed_" + str(seed) + "LBFGS")
 
-    model_name = "Adam_2Layer_{}_epochs".format(epochs)
+    #model_name = "Adam_2Layer_{}_epochs".format(epochs)
 
-    model_name = "LBFGS_2Layer_{}_epochs_longer_seq".format(epochs)
+    model_name = "LBFGS_{}epochs_64_hn_no_input_inertia,wind,conv".format(epochs+1)
 
     save_model(
         model, model_name
@@ -587,23 +593,23 @@ def main():
     return training_loss, validation_loss, model_name, model_params
 def MLP_main():
     seed = torch.initial_seed()
-    model_params = {"n_hidden":256, "drpout_lvl":0.2, "n_layers":2}
+    model_params = {"n_hidden":256, "drpout_lvl":0.2, "n_layers":1}
     train, val, test, scaler, normalizer = get_split_sets(n_samples=1)
-    test = df_to_dataset(test, 1, 1, 6)
-    train = df_to_dataset(train, 1, 1, 6)
+    test = df_to_dataset(test, 1, 1, 5)
+    train = df_to_dataset(train, 1, 1, 5)
     val = df_to_dataset(val, 1, 1, 6)
     
 
     BATCH_SIZE_TRAIN = 256
     #BATCH_SIZE_TRAIN = len(train) # Use this for LBFGSar
-    n_epochs = 40
+    n_epochs = 100
     early_stopping = True  
     train_loader = DataLoader(train, BATCH_SIZE_TRAIN, shuffle=False)
     val_loader = DataLoader(val, batch_size=8, shuffle=False)
     test_loader = DataLoader(test, batch_size=1, shuffle=False)
     learning_rate = 5e-4
     model = MLPPredictor(6, 1, 512, 1)
-    #model_path = "Models/Adam_1Layer.pt"
+    model_path = "Models/Adam_1Layer.pt"
     #model = load_model(model_path, **model_params)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate,weight_decay=1e-5)
     #optimizer = optim.LBFGS(model.parameters())
@@ -624,15 +630,23 @@ def MLP_main():
     
     
     return training_loss, validation_loss, model_name, model_params
-if __name__=='__main__':
+
+
+if __name__== '__main__':
      training_loss, validation_loss, model_name, model_params = main()
-
-
+  #    model_name = 'LBFGS_2Layer_10_epochs_64_hn_no_input_inertia'
+  #    model_params = {'n_hidden': 64,
+  # 'drpout_lvl': 0.2,
+  # 'n_layers': 2,
+  # 'n_in_features': 5,
+  # 'n_out_features': 1}
+     tot, sub = prepare_evaluation(model_name, model_params, set_params=[24,1,5,1])
+     err = MAPE(tot)
+     sub.plot()
 # if __name__ == '__main__':
 #     training_loss, validation_loss, model_name, model_params = MLP_main()
 
-if __name__=='__main__':
-    training_loss, validation_loss, model_name, model_params = main()
+
 
 
 # model_name = "LBFGS_1_layer_baseline"
